@@ -27,4 +27,9 @@ trigger AllContactTrigger on Contact (after insert, before update, after update)
         handler.chainpointApi(Trigger.new);
     }
     }
+
+    // PT (SJ) - 9 Oct 2024 - Add logic automatically creating users TORs#1508
+    if (Trigger.isAfter && Trigger.isInsert) {
+        AllContactTriggerHandler.onAfterInsert(Trigger.newMap);
+    } // end after insert check
  }
