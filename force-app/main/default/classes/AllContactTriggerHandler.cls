@@ -96,6 +96,16 @@ public class AllContactTriggerHandler {
 		}
 	} // end OnAfterInsert
 
+	public class AccountsUpdateQueueable implements Queueable {
+		private final List<Account> accounts;
+		public AccountsUpdateQueueable(List<Account> pAccounts) {
+			this.accounts = pAccounts;
+		}
+		public void execute(QueueableContext context) {
+			AllContactTriggerHandler.updateAccountRecords(this.accounts);
+		}
+	} // end OnAfterInsert
+
 	public static void onAfterInsert(Map<Id,Contact> newContactsMap) {
 
 		// PT (SJ) 14 Oct 2024 - had to move into queueable to disassociate contact changes
@@ -213,11 +223,15 @@ public class AllContactTriggerHandler {
 
 					// Capture successful user records for adding permission sets to later on
 					Map<Id,User> contactIdToCreatedUsers = new Map<Id,User>();
+
+					// Need to get our contact id to link back on success and find the account to update
+					Map<Id,Id> userIdToContactId = new Map<Id,Id>();
 					for (Database.SaveResult result : results) {
 						if (result.isSuccess()) {
 							for (User createdUser : usersToCreate) {
 								if (createdUser.Id == result.getId()) {
 									contactIdToCreatedUsers.put(createdUser.ContactId, createdUser);
+									userIdToContactId.put(createdUser.Id, createdUser.ContactId);
 									break;
 								} // end found match between users created and save result id
 							} // end loop through the user created list
@@ -280,6 +294,44 @@ public class AllContactTriggerHandler {
 						if (!permissionSetAssignments.isEmpty()) {
 							List<Database.SaveResult> permSetResults = Database.insert(permissionSetAssignments,false);
 							System.debug('perm set results ' + permSetResults);
+
+							// Collect account to be updated.  Go through a set just in case we have multiple contacts
+							// for the same account - ie avoid duplication errors.
+							Set<Id> accountIds = new Set<Id>();
+							for (PermissionSetAssignment psa : permissionSetAssignments) {
+								if (psa.Id != null) {
+									Id contactId = userIdToContactId.get(psa.AssigneeId);
+									System.debug('Read back contact id');
+
+									Id accountId = newContactsMap.get(contactId).AccountId;
+									System.debug('Account to be updated ' + accountId);
+									accountIds.add(accountId);
+								} // end check psa inserted correctly
+							} // end loop through permission set assignments
+
+							if (!accountIds.isEmpty()) {
+								List<Account> accountsToUpdate = new List<Account>();
+								for (Id accountId : accountIds) {
+									accountsToUpdate.add(new Account(Id = accountId, myBetterCotton_Access__c = true));
+								} // end loop through account ids
+
+								if (!accountsToUpdate.isEmpty()) {
+									AccountsUpdateQueueable auq = new AccountsUpdateQueueable(accountsToUpdate);
+
+									// Cannot run in test class due to a lower stack depth limit
+									if (!Test.isRunningTest()) {
+										System.enqueueJob(auq);
+									}
+									else {
+
+										// When running in test class we can do a runAs to overcome the mixed dml issues
+										System.runAs(new User(Id = UserInfo.getUserId())) {
+											updateAccountRecords(accountsToUpdate);
+										}
+									}
+								}
+							} // end check for accounts to update
+
 						} // end check we have perm set assignments if
 					} // end successful create check if
 				} // end check for records to insert if
@@ -289,4 +341,11 @@ public class AllContactTriggerHandler {
 			} // end check for matching opportunities
 		} // end check for primary contacts if
 	} // end onAfterInsert
+
+	// Called from a queueable to update the accounts records.  Cannot do inline because we
+	// get a MIXED DML failure
+	private static void updateAccountRecords(List<Account> accounts) {
+		List<Database.SaveResult> results = Database.update(accounts,false);
+		System.debug('Account update results = ' + results);
+	} // end updateAccountRecords
 } // end class
